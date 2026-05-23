@@ -1,7 +1,7 @@
 # ── API ───────────────────────────────────────────────────────────────────────
 fastapi==0.115.5
 uvicorn[standard]==0.32.1
-motor==3.6.0               # async MongoDB driver (wraps pymongo)
+motor==3.6.0               # async MongoDB driver (wraps pymongo<4.10)
 pydantic==2.10.3           # FastAPI 0.115 uses Pydantic v2
 
 # ── Scraper ───────────────────────────────────────────────────────────────────
@@ -22,5 +22,5 @@ firebase-admin==6.5.0      # Firebase token verification
 
 # ── Utils ─────────────────────────────────────────────────────────────────────
 python-dotenv==1.0.1
-pymongo==4.10.1            # sync driver used by archive job + scripts
+pymongo==4.9.2             # sync driver used by archive job + scripts (motor 3.6 requires <4.10)
 trafilatura>=2.0.0         # news article text extraction — primary content extractor
