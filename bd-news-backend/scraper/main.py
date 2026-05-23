@@ -41,6 +41,7 @@ from scraper.db import (                                              # noqa: E4
 )
 from scraper.gemini import tag_article                                # noqa: E402
 from scraper.content_fetcher import fetch_contents, FETCH_LIMIT_PER_RUN  # noqa: E402
+from archive.archiver import check_and_archive_if_needed              # noqa: E402
 
 
 async def _dispatch_fetch(site: Dict[str, str]) -> List[Dict[str, Any]]:
@@ -192,6 +193,9 @@ async def run_scraper(group: str = "all") -> None:
         f"failed={tag_stats['failed']} "
         f"vanished={tag_stats['skipped_zero_quota']}"
     )
+
+    # Stage 7: Emergency size check — archive oldest months if DB >= 480 MB.
+    check_and_archive_if_needed()
 
     elapsed = time.monotonic() - overall_t0
     print(f"=== done in {elapsed:.1f}s ===")
