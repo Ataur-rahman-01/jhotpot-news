@@ -97,14 +97,18 @@ def setup_indexes() -> None:
         col.create_index([("source", ASCENDING)], name="source_asc")
         col.create_index([("category", ASCENDING)], name="category_asc")
         col.create_index([("ai_processed", ASCENDING)], name="ai_processed_asc")
+
+        # Drop old text index that included 'content' — it was the largest index.
+        # New index covers only title + ai_summary (same search quality, ~50% smaller).
+        try:
+            col.drop_index("text_title_content_summary")
+        except Exception:
+            pass  # didn't exist yet
+
         col.create_index(
-            [("title", TEXT), ("content", TEXT), ("ai_summary", TEXT)],
-            name="text_title_content_summary",
-            weights={"title": 10, "ai_summary": 5, "content": 1},
-            # "none" disables stemming — correct for Bangla text.
-            # language_override points to a non-existent field so MongoDB
-            # never tries to use our 'language' field (value "bn") as a
-            # text-index language (which would throw error code 17262).
+            [("title", TEXT), ("ai_summary", TEXT)],
+            name="text_title_summary",
+            weights={"title": 10, "ai_summary": 5},
             default_language="none",
             language_override="text_lang",
         )
@@ -124,6 +128,26 @@ def setup_indexes() -> None:
         name="ttl_read_at_90d",
     )
     print(f"[indexes] user_history: ensured 2 indexes (incl. 90d TTL)")
+
+    users = db["users"]
+    users.create_index(
+        [("firebase_uid", ASCENDING)],
+        unique=True,
+        name="uniq_firebase_uid",
+    )
+    print("[indexes] users: ensured 1 index")
+
+    bookmarks = db["user_bookmarks"]
+    bookmarks.create_index(
+        [("firebase_uid", ASCENDING), ("article_id", ASCENDING)],
+        unique=True,
+        name="uniq_uid_article",
+    )
+    bookmarks.create_index(
+        [("firebase_uid", ASCENDING), ("saved_at", DESCENDING)],
+        name="uid_saved_at_desc",
+    )
+    print("[indexes] user_bookmarks: ensured 2 indexes")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -157,11 +181,12 @@ def save_articles(articles: List[Dict[str, Any]], collection_name: str) -> int:
 
         # Defaults applied only on first insert. Existing docs keep their
         # AI fields, content, etc. untouched.
+        raw_content = a.get("content", "")
         on_insert = {
             "url": url,
             "title": a.get("title", ""),
-            "summary": a.get("summary", ""),
-            "content": a.get("content", ""),          # full text — filled by content fetcher
+            # summary omitted — ai_summary replaces it after Gemini processing
+            "content": raw_content[:3000],            # cap at 3000 chars (~9 KB for Bangla)
             "image_url": a.get("image_url"),          # may be None — that is OK
             "source": a.get("source", ""),
             "language": a.get("language", ""),
@@ -270,7 +295,7 @@ def update_content(collection_name: str, article_id: Any, content: str) -> bool:
     col = get_collection(collection_name)
     result = col.update_one(
         {"_id": article_id, "content": ""},
-        {"$set": {"content": content}},
+        {"$set": {"content": content[:3000]}},  # cap at 3000 chars
     )
     return result.modified_count == 1
 
