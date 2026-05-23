@@ -1,0 +1,32 @@
+name: Scrape Group B
+
+on:
+  schedule:
+    - cron: '30 * * * *'  # every hour at :30
+  workflow_dispatch:       # manual trigger from GitHub UI
+
+jobs:
+  scrape-group-b:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: bd-news-backend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run scraper — Group B
+        env:
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: python -m scraper.main --group b
