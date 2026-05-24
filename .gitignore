@@ -1,6 +1,7 @@
 # Secrets — never commit
 .env
 *.env
+cloud-setup.sh
 
 # Python
 __pycache__/

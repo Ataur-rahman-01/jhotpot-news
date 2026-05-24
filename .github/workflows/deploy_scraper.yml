@@ -1,0 +1,64 @@
+name: Build & Deploy Scraper
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'bd-news-backend/scraper/**'
+      - 'bd-news-backend/archive/**'
+      - 'bd-news-backend/requirements.txt'
+      - 'bd-news-backend/Dockerfile.scraper'
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  REGION: asia-south1
+  REPOSITORY: bd-news
+  IMAGE: scraper
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write   # required for Workload Identity Federation
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and push image via Cloud Build
+        working-directory: bd-news-backend
+        run: |
+          IMAGE_URL=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE }}
+          gcloud builds submit . \
+            --config=cloudbuild.yaml \
+            --substitutions="_IMAGE_URL=$IMAGE_URL:${{ github.sha }}" \
+            --region=${{ env.REGION }} \
+            --quiet
+          # Tag :latest separately using the just-pushed sha image
+          gcloud artifacts docker tags add \
+            "$IMAGE_URL:${{ github.sha }}" \
+            "$IMAGE_URL:latest"
+
+      - name: Update Cloud Run Jobs to latest image
+        run: |
+          IMAGE_URL=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE }}:${{ github.sha }}
+
+          for JOB in bd-news-scraper-group-a bd-news-scraper-group-b bd-news-archiver; do
+            echo "Updating $JOB..."
+            gcloud run jobs update $JOB \
+              --image=$IMAGE_URL \
+              --region=${{ env.REGION }} \
+              --quiet
+          done

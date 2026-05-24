@@ -223,4 +223,16 @@ def check_and_archive_if_needed() -> None:
 
 
 if __name__ == "__main__":
-    run_archive()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--mode",
+        choices=["size-check", "full"],
+        default="size-check",
+        help="size-check: archive only if >= 480 MB (daily job). full: archive all >90 day articles.",
+    )
+    args = parser.parse_args()
+    if args.mode == "size-check":
+        check_and_archive_if_needed()
+    else:
+        run_archive()
