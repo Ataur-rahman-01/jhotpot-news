@@ -132,7 +132,8 @@ bind_role "serviceAccount:$SCRAPER_SA_EMAIL" "roles/artifactregistry.reader"
 # Scheduler SA: trigger Cloud Run Jobs
 bind_role "serviceAccount:$SCHEDULER_SA_EMAIL" "roles/run.developer"
 
-# Deploy SA: push images + update Cloud Run Jobs
+# Deploy SA: submit Cloud Builds, push images, update Cloud Run Jobs
+bind_role "serviceAccount:$DEPLOY_SA_EMAIL" "roles/cloudbuild.builds.editor"
 bind_role "serviceAccount:$DEPLOY_SA_EMAIL" "roles/artifactregistry.writer"
 bind_role "serviceAccount:$DEPLOY_SA_EMAIL" "roles/run.developer"
 
