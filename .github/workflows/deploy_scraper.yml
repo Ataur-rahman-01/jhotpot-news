@@ -40,19 +40,19 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Build and push image via Cloud Build
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push image
         working-directory: bd-news-backend
         run: |
           IMAGE_URL=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE }}
-          gcloud builds submit . \
-            --config=cloudbuild.yaml \
-            --substitutions="_IMAGE_URL=$IMAGE_URL:${{ github.sha }}" \
-            --region=${{ env.REGION }} \
-            --quiet
-          # Tag :latest separately using the just-pushed sha image
-          gcloud artifacts docker tags add \
-            "$IMAGE_URL:${{ github.sha }}" \
-            "$IMAGE_URL:latest"
+          docker build -f Dockerfile.scraper \
+            -t $IMAGE_URL:${{ github.sha }} \
+            -t $IMAGE_URL:latest \
+            .
+          docker push $IMAGE_URL:${{ github.sha }}
+          docker push $IMAGE_URL:latest
 
       - name: Update Cloud Run Jobs to latest image
         run: |
