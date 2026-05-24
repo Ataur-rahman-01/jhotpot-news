@@ -49,6 +49,7 @@ B2_KEY_ID="${B2_KEY_ID:-}"
 B2_APP_KEY="${B2_APP_KEY:-}"
 B2_BUCKET_NAME="${B2_BUCKET_NAME:-}"
 B2_ENDPOINT="${B2_ENDPOINT:-}"
+FIREBASE_CREDENTIALS="${FIREBASE_CREDENTIALS:-}"   # full JSON from Firebase console (as a string)
 
 # ── Validation ────────────────────────────────────────────────────────────────
 if [[ -z "$PROJECT_ID" ]]; then
@@ -207,12 +208,13 @@ store_secret() {
   fi
 }
 
-store_secret "MONGO_URI"       "$MONGO_URI"
-store_secret "OPENAI_API_KEY"  "$OPENAI_API_KEY"
-store_secret "B2_KEY_ID"       "$B2_KEY_ID"
-store_secret "B2_APP_KEY"      "$B2_APP_KEY"
-store_secret "B2_BUCKET_NAME"  "$B2_BUCKET_NAME"
-store_secret "B2_ENDPOINT"     "$B2_ENDPOINT"
+store_secret "MONGO_URI"             "$MONGO_URI"
+store_secret "OPENAI_API_KEY"        "$OPENAI_API_KEY"
+store_secret "B2_KEY_ID"             "$B2_KEY_ID"
+store_secret "B2_APP_KEY"            "$B2_APP_KEY"
+store_secret "B2_BUCKET_NAME"        "$B2_BUCKET_NAME"
+store_secret "B2_ENDPOINT"           "$B2_ENDPOINT"
+store_secret "FIREBASE_CREDENTIALS"  "$FIREBASE_CREDENTIALS"
 
 # ── 8. Build & push initial Docker image via Cloud Build (no local Docker needed)
 echo "[7/8] Docker image (building via Cloud Build)..."
@@ -294,6 +296,70 @@ create_or_update_scheduler "bd-news-scrape-group-b" "30 * * * *" "bd-news-scrape
 # Archiver — every day at midnight UTC
 create_or_update_scheduler "bd-news-archive"        "0 0 * * *"  "bd-news-archiver"
 
+# ── 11. FastAPI Cloud Run Service ─────────────────────────────────────────────
+echo "[+] FastAPI Cloud Run Service..."
+
+API_IMAGE_URL="$REGION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/api:latest"
+API_SECRET_REFS="MONGO_URI=MONGO_URI:latest,FIREBASE_CREDENTIALS=FIREBASE_CREDENTIALS:latest,B2_KEY_ID=B2_KEY_ID:latest,B2_APP_KEY=B2_APP_KEY:latest,B2_BUCKET_NAME=B2_BUCKET_NAME:latest,B2_ENDPOINT=B2_ENDPOINT:latest"
+
+# Build and push API image using Cloud Build
+API_CLOUDBUILD="$SCRIPT_DIR/cloudbuild.api.yaml"
+cat > "$API_CLOUDBUILD" <<'YAML'
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: [build, -f, Dockerfile, -t, $_IMAGE_URL, .]
+images:
+  - $_IMAGE_URL
+options:
+  logging: CLOUD_LOGGING_ONLY
+YAML
+
+gcloud builds submit "$SCRIPT_DIR" \
+  --config="$API_CLOUDBUILD" \
+  --substitutions="_IMAGE_URL=$API_IMAGE_URL" \
+  --region="$REGION" \
+  --quiet
+echo "  API image pushed: $API_IMAGE_URL"
+
+# Grant scraper SA access to FIREBASE_CREDENTIALS (API service uses scraper SA)
+# Actually create a dedicated API SA
+API_SA="bd-news-api-sa"
+API_SA_EMAIL="$API_SA@$PROJECT_ID.iam.gserviceaccount.com"
+
+gcloud iam service-accounts describe "$API_SA_EMAIL" &>/dev/null || \
+  gcloud iam service-accounts create "$API_SA" --display-name="BD News API Service Account"
+
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --member="serviceAccount:$API_SA_EMAIL" \
+  --role="roles/secretmanager.secretAccessor" --quiet
+
+# Deploy or update the Cloud Run Service
+if gcloud run services describe "bd-news-api" --region="$REGION" &>/dev/null; then
+  gcloud run services update "bd-news-api" \
+    --image="$API_IMAGE_URL" \
+    --region="$REGION" \
+    --quiet
+  echo "  bd-news-api — updated."
+else
+  gcloud run deploy "bd-news-api" \
+    --image="$API_IMAGE_URL" \
+    --region="$REGION" \
+    --platform=managed \
+    --allow-unauthenticated \
+    --service-account="$API_SA_EMAIL" \
+    --set-secrets="$API_SECRET_REFS" \
+    --min-instances=0 \
+    --max-instances=10 \
+    --memory=512Mi \
+    --cpu=1 \
+    --port=8080 \
+    --quiet
+  echo "  bd-news-api — created."
+fi
+
+API_URL=$(gcloud run services describe "bd-news-api" --region="$REGION" --format="value(status.url)")
+echo "  API URL: $API_URL"
+
 # ── Done ──────────────────────────────────────────────────────────────────────
 WIF_PROVIDER_FULL="projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$WIF_POOL/providers/$WIF_PROVIDER"
 
@@ -301,6 +367,9 @@ echo ""
 echo "╔══════════════════════════════════════════════════════════════════╗"
 echo "║  Setup complete!                                                 ║"
 echo "╚══════════════════════════════════════════════════════════════════╝"
+echo ""
+echo "API URL (use this in your Flutter app):"
+echo "  $API_URL"
 echo ""
 echo "Cloud Run Jobs:"
 gcloud run jobs list --region="$REGION" --format="table(name,region,lastModifiedTime)"
@@ -314,6 +383,6 @@ echo "  GCP_PROJECT_ID                 = $PROJECT_ID"
 echo "  GCP_SERVICE_ACCOUNT            = $DEPLOY_SA_EMAIL"
 echo "  GCP_WORKLOAD_IDENTITY_PROVIDER = $WIF_PROVIDER_FULL"
 echo ""
-echo "Monitor jobs at:"
+echo "Monitor at:"
+echo "  https://console.cloud.google.com/run?project=$PROJECT_ID"
 echo "  https://console.cloud.google.com/cloudscheduler?project=$PROJECT_ID"
-echo "  https://console.cloud.google.com/run/jobs?project=$PROJECT_ID"
