@@ -141,7 +141,7 @@ async def fetch_site(site: Dict[str, str]) -> List[Dict[str, Any]]:
         articles: List[Dict[str, Any]] = []
         now = datetime.utcnow()
 
-        for entry in feed.entries:
+        for entry in feed.entries[:20]:
             url = (entry.get("link") or "").strip()
             if not url:
                 # No link = no dedup key = useless.

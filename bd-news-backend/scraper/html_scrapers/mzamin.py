@@ -15,7 +15,7 @@ The sitemap is 1.7 MB with ~5,000 entries, listed newest-first. We take
 the first MAX_ARTICLES_PER_RUN article-shaped entries and skip the
 ~5 nav entries (homepage, /archive, /print, etc.) at the top.
 
-Per-run yield (default cap): 200 newest articles.
+Per-run yield (default cap): 20 newest articles.
 
 No image_url, no summary — placeholder shows in Flutter, Gemini classifies
 from title only. Less ideal than the Google News sites but functional.
@@ -38,7 +38,7 @@ from scraper.html_scrapers.base import (
 
 
 SITEMAP_URL = "https://www.mzamin.com/post-sitemap.xml"
-MAX_ARTICLES_PER_RUN = 200
+MAX_ARTICLES_PER_RUN = 20
 
 # Article URL pattern. Path: /article/<numeric-id>/<bangla-slug>
 _ARTICLE_URL_RE = re.compile(r"^https?://[^/]+/article/\d+/.+", re.IGNORECASE)

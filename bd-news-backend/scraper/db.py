@@ -21,9 +21,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
-from typing import Any, Dict, List, Optional
-
-from datetime import timedelta
+from typing import Any, Dict, List, Optional, Set
 
 from pymongo import MongoClient, ASCENDING, DESCENDING, TEXT, UpdateOne
 from pymongo.collection import Collection
@@ -186,7 +184,7 @@ def save_articles(articles: List[Dict[str, Any]], collection_name: str) -> int:
             "url": url,
             "title": a.get("title", ""),
             # summary omitted — ai_summary replaces it after Gemini processing
-            "content": raw_content[:3000],            # cap at 3000 chars (~9 KB for Bangla)
+            "content": raw_content[:8000],            # cap at 8000 chars — matches content_fetcher.MAX_CONTENT_CHARS
             "image_url": a.get("image_url"),          # may be None — that is OK
             "source": a.get("source", ""),
             "language": a.get("language", ""),
@@ -195,7 +193,6 @@ def save_articles(articles: List[Dict[str, Any]], collection_name: str) -> int:
             # AI fields default empty until gemini.py fills them.
             "category": None,
             "tags": [],
-            "sentiment": None,
             "ai_summary": "",
             "ai_processed": False,
         }
@@ -228,6 +225,21 @@ def save_articles(articles: List[Dict[str, Any]], collection_name: str) -> int:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Dedup helper — skip content fetching for articles already in MongoDB.
+# ─────────────────────────────────────────────────────────────────────────────
+def get_existing_urls(collection_name: str, urls: List[str]) -> Set[str]:
+    """
+    Return the subset of `urls` that already exist in the collection.
+    Used before content fetching so we don't re-fetch articles we already saved.
+    """
+    if not urls:
+        return set()
+    col = get_collection(collection_name)
+    found = col.find({"url": {"$in": urls}}, {"url": 1, "_id": 0})
+    return {doc["url"] for doc in found}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Gemini queue helpers
 # ─────────────────────────────────────────────────────────────────────────────
 def get_unprocessed(collection_name: str, limit: int = 50) -> List[Dict[str, Any]]:
@@ -251,63 +263,13 @@ def get_unprocessed(collection_name: str, limit: int = 50) -> List[Dict[str, Any
     return list(cursor)
 
 
-def get_articles_without_content(collection_name: str, limit: int = 30) -> List[Dict[str, Any]]:
-    """
-    Return articles that still have an empty content field, scoped to the last
-    7 days so permanently-blocked sites (403) don't consume the quota forever.
-
-    Sorted newest-first — fresh articles always win over old retry candidates.
-    ai_processed is intentionally NOT filtered: an article can be Gemini-tagged
-    but still have empty content if the content fetch failed in the same run
-    (Gemini runs right after content-fetch, so a failed article gets tagged
-    immediately and would otherwise be excluded forever).
-
-    Only _id, url, and source are projected — the caller only needs those.
-    """
-    if collection_name not in ARTICLE_COLLECTIONS:
-        raise ValueError(f"get_articles_without_content target must be one of {ARTICLE_COLLECTIONS}, got {collection_name!r}")
-    if limit <= 0:
-        return []
-
-    cutoff = datetime.utcnow() - timedelta(days=7)
-    col = get_collection(collection_name)
-    cursor = (
-        col.find(
-            {"content": {"$in": ["", None]}, "scraped_at": {"$gte": cutoff}},
-            {"_id": 1, "url": 1, "source": 1},
-        )
-        .sort("scraped_at", DESCENDING)
-        .limit(limit)
-    )
-    return list(cursor)
-
-
-def update_content(collection_name: str, article_id: Any, content: str) -> bool:
-    """
-    Write fetched article body text into an article document.
-
-    Only updates when content is still empty (safety guard against overwriting
-    text already fetched by a concurrent run). Returns True if one doc was updated.
-    """
-    if collection_name not in ARTICLE_COLLECTIONS:
-        raise ValueError(f"update_content target must be one of {ARTICLE_COLLECTIONS}, got {collection_name!r}")
-
-    col = get_collection(collection_name)
-    result = col.update_one(
-        {"_id": article_id, "content": ""},
-        {"$set": {"content": content[:3000]}},  # cap at 3000 chars
-    )
-    return result.modified_count == 1
-
-
 def mark_processed(collection_name: str, article_id: Any, ai_data: Dict[str, Any]) -> bool:
     """
-    Apply Gemini's output to an article and flip ai_processed to True.
+    Apply AI output to an article and flip ai_processed to True.
 
     Expected keys in ai_data:
-        category   str   one of the SKILL.md categories
+        category   str   topic label chosen freely by the AI
         tags       list  5–8 keywords in the article's language
-        sentiment  str   positive / neutral / negative
         ai_summary str   2–3 sentence summary in the article's language
 
     Returns True if exactly one document was updated.
@@ -318,7 +280,6 @@ def mark_processed(collection_name: str, article_id: Any, ai_data: Dict[str, Any
     update_doc = {
         "category":   ai_data.get("category"),
         "tags":       ai_data.get("tags", []),
-        "sentiment":  ai_data.get("sentiment"),
         "ai_summary": ai_data.get("ai_summary", ""),
         "ai_processed": True,
     }

@@ -17,7 +17,8 @@ Extraction strategy (tried in order):
 
 Concurrency:
     MAX_CONCURRENT parallel requests (asyncio.Semaphore). Polite to servers.
-    FETCH_LIMIT_PER_RUN caps articles per scraper run so GHA stays fast.
+    A single shared httpx.AsyncClient is reused across all URLs in one run
+    so we don't pay TCP+TLS setup cost per article.
 """
 
 from __future__ import annotations
@@ -39,8 +40,7 @@ except ImportError:
 
 
 MAX_CONCURRENT = 5          # parallel HTTP requests
-FETCH_LIMIT_PER_RUN = 50    # articles per collection per run (raised from 30)
-MAX_CONTENT_CHARS = 8_000   # cap stored text — plenty for Gemini
+MAX_CONTENT_CHARS = 8_000   # cap stored text — matches db.py save_articles cap
 MIN_TEXT_LEN = 150           # below this the extraction is considered failed
 
 # Generic selectors tried in order — first match with >= MIN_TEXT_LEN chars wins.
@@ -80,7 +80,6 @@ _SITE_SELECTORS: Dict[str, List[str]] = {
     "mzamin":        [".content-body", ".details-content"],
     "jugantor":      [".desktopDetailBody", ".detailBody", ".details-body"],
     "ajkerpatrika":  [".block-full_richtext", ".article-body"],
-    # kalerkantho: article pages return 403; no selector can help
 }
 
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -142,18 +141,18 @@ def _extract_text(page_html: str, source: str = "") -> str:
     return ""
 
 
-async def _fetch_one(url: str, source: str, semaphore: asyncio.Semaphore) -> str:
+async def _fetch_one(
+    client: httpx.AsyncClient,
+    url: str,
+    source: str,
+    semaphore: asyncio.Semaphore,
+) -> str:
     """Fetch one article URL and return extracted text. Returns "" on any error."""
     async with semaphore:
         try:
-            async with httpx.AsyncClient(
-                headers=DEFAULT_HEADERS,
-                timeout=DEFAULT_TIMEOUT_SECONDS,
-                follow_redirects=True,
-            ) as client:
-                resp = await client.get(url)
-                resp.raise_for_status()
-                return _extract_text(resp.text, source)
+            resp = await client.get(url)
+            resp.raise_for_status()
+            return _extract_text(resp.text, source)
         except Exception as exc:  # noqa: BLE001
             print(f"[content] {url[:80]}: {type(exc).__name__}: {exc}")
             return ""
@@ -178,10 +177,18 @@ async def fetch_contents(articles: List[Dict[str, Any]]) -> Dict[str, str]:
         for a in articles if a.get("url")
     ]
 
-    raw_results = await asyncio.gather(
-        *(_fetch_one(url, source, semaphore) for url, source in url_source_pairs),
-        return_exceptions=True,
-    )
+    # One shared client = one connection pool across all fetches. Avoids
+    # 100 TCP+TLS handshakes when fetching 100 articles in a single run.
+    async with httpx.AsyncClient(
+        headers=DEFAULT_HEADERS,
+        timeout=DEFAULT_TIMEOUT_SECONDS,
+        follow_redirects=True,
+    ) as client:
+        raw_results = await asyncio.gather(
+            *(_fetch_one(client, url, source, semaphore)
+              for url, source in url_source_pairs),
+            return_exceptions=True,
+        )
 
     output: Dict[str, str] = {}
     for (url, _), result in zip(url_source_pairs, raw_results):

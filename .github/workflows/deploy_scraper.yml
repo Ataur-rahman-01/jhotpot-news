@@ -58,10 +58,14 @@ jobs:
         run: |
           IMAGE_URL=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE }}:${{ github.sha }}
 
-          for JOB in bd-news-scraper-group-a bd-news-scraper-group-b bd-news-archiver; do
+          for JOB in bd-news-scraper-group-a bd-news-scraper-group-b bd-news-scraper-group-c bd-news-scraper-group-d bd-news-scraper-group-e bd-news-archiver; do
             echo "Updating $JOB..."
-            gcloud run jobs update $JOB \
-              --image=$IMAGE_URL \
-              --region=${{ env.REGION }} \
-              --quiet
+            if gcloud run jobs describe $JOB --region=${{ env.REGION }} --quiet 2>/dev/null; then
+              gcloud run jobs update $JOB \
+                --image=$IMAGE_URL \
+                --region=${{ env.REGION }} \
+                --quiet
+            else
+              echo "WARNING: Job $JOB does not exist yet — skipping. Create it once in GCP console then it will auto-update on future deploys."
+            fi
           done

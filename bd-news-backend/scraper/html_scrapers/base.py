@@ -207,7 +207,7 @@ async def parse_google_news_sitemap(
     site: Dict[str, Any],
     sitemap_url: str,
     *,
-    max_articles: int = 300,
+    max_articles: int = 20,
 ) -> List[Dict[str, Any]]:
     """
     Fetch and parse a Google News sitemap into article dicts.

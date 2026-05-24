@@ -1,8 +1,8 @@
 """
 gemini.py — Single-call article enrichment via OpenAI (GPT-4.1 Nano).
 
-Per project rule: ONE call per article returns ALL four AI fields
-(category, tags, sentiment, ai_summary). Never split into multiple calls.
+Per project rule: ONE call per article returns all three AI fields
+(category, tags, ai_summary). Never split into multiple calls.
 
 To switch back to Gemini: uncomment the Gemini block below, comment out
 the OpenAI block, and set GEMINI_API_KEY in your .env / GitHub Secrets.
@@ -35,14 +35,8 @@ MODEL_NAME = "gpt-4.1-nano"
 # Gemini equivalent (uncomment to switch back):
 # GEMINI_MODEL_NAME = "gemini-1.5-flash"
 
-ALLOWED_CATEGORIES = {
-    "politics", "sports", "business", "technology", "entertainment",
-    "international", "crime", "health", "education", "environment",
-    "religion", "transportation",
-}
-ALLOWED_SENTIMENTS = {"positive", "neutral", "negative"}
-
-RATE_LIMIT_DELAY_SECONDS = 3.0   # wait 3 s after each call — gives API time to breathe
+RATE_LIMIT_DELAY_SECONDS = 6.0   # 6 s between calls = 10 calls/min
+API_TIMEOUT_SECONDS = 30.0       # hard timeout per OpenAI call — prevents infinite hang
 MAX_INPUT_WORDS = 500            # cap body at 500 words before sending to the API
 
 
@@ -83,20 +77,15 @@ def _get_client() -> AsyncOpenAI:
 # ─────────────────────────────────────────────────────────────────────────────
 def _build_prompt(title: str, body: str, language: str) -> str:
     lang_label = "Bangla" if language == "bn" else "English"
-    categories = ", ".join(sorted(ALLOWED_CATEGORIES))
-    sentiments  = ", ".join(sorted(ALLOWED_SENTIMENTS))
 
-    return f"""You are a news article tagger. Analyse the article below and return ONLY
-valid JSON. No markdown. No explanation. No backticks. No prose before or after.
+    return f"""You are a news article analyst. This is a real news article written in {lang_label}.
+Analyse it and return ONLY valid JSON. No markdown. No explanation. No backticks.
 
-The article is in {lang_label}.
+Return a JSON object with EXACTLY these three fields:
 
-Return a JSON object with EXACTLY these four fields:
-
-  "category"   — string, MUST be one of: {categories}
-  "tags"       — array of 5 to 8 keywords, written in the article's own language ({lang_label})
-  "sentiment"  — string, MUST be one of: {sentiments}
-  "ai_summary" — string, EXACTLY 2 to 3 sentences, written in the article's own language ({lang_label})
+  "category"   — string, one word or short phrase that best describes the news topic (e.g. politics, sports, economy, crime, health — choose whatever fits best)
+  "tags"       — array of 5 to 8 relevant keywords written in {lang_label}
+  "ai_summary" — string, EXACTLY 2 to 3 sentences capturing the key facts, written in {lang_label}. This is the most important field — make it clear, accurate, and informative.
 
 ARTICLE TITLE:
 {title}
@@ -104,7 +93,7 @@ ARTICLE TITLE:
 ARTICLE BODY:
 {body}
 
-Respond with valid JSON only, no markdown, no explanation, no backticks."""
+Respond with valid JSON only."""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -134,31 +123,23 @@ def _validate(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
 
     category = data.get("category")
-    if not isinstance(category, str) or category.lower() not in ALLOWED_CATEGORIES:
-        return None
-    category = category.lower()
+    if not isinstance(category, str):
+        category = ""
 
     tags = data.get("tags")
     if not isinstance(tags, list):
-        return None
+        tags = []
     tags = [str(t).strip() for t in tags if str(t).strip()]
-    if len(tags) < 3:
-        return None
     tags = tags[:8]
 
-    sentiment = data.get("sentiment")
-    if not isinstance(sentiment, str) or sentiment.lower() not in ALLOWED_SENTIMENTS:
-        return None
-    sentiment = sentiment.lower()
-
+    # ai_summary is the primary goal — only fail if it is missing or empty.
     ai_summary = data.get("ai_summary")
     if not isinstance(ai_summary, str) or not ai_summary.strip():
         return None
 
     return {
-        "category":   category,
+        "category":   category.strip().lower(),
         "tags":       tags,
-        "sentiment":  sentiment,
         "ai_summary": ai_summary.strip(),
     }
 
@@ -169,7 +150,7 @@ def _validate(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 async def tag_article(article: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
     Enrich one article with GPT-4.1 Nano in a single API call.
-    Returns {category, tags, sentiment, ai_summary} or None on failure.
+    Returns {category, tags, ai_summary} or None on failure.
     """
     title    = (article.get("title")   or "").strip()
     body     = (article.get("content") or article.get("summary") or "").strip()
@@ -188,12 +169,15 @@ async def tag_article(article: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         client  = _get_client()
         prompt  = _build_prompt(title, body, language)
 
-        response = await client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            max_tokens=512,
-            response_format={"type": "json_object"},
+        response = await asyncio.wait_for(
+            client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+                max_tokens=512,
+                response_format={"type": "json_object"},
+            ),
+            timeout=API_TIMEOUT_SECONDS,
         )
         raw = response.choices[0].message.content or ""
 

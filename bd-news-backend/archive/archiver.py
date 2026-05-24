@@ -20,7 +20,6 @@ Usage:
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Tuple
 
@@ -81,10 +80,7 @@ def _archive_group(
 
     compressed = compress(articles)
     b2.upload(filename, compressed, folder)
-
-    if not b2.file_exists(filename, folder):
-        print(f"{tag} ERROR: upload not confirmed for {folder}/{filename} — MongoDB untouched")
-        return 0
+    # upload() raises ClientError on failure — if we reach here the upload succeeded.
 
     ids = [a["_id"] for a in articles]
     result = col.delete_many({"_id": {"$in": ids}})
@@ -133,11 +129,17 @@ def run_archive() -> None:
             month    = group["_id"]["month"]
             articles = group["articles"]
 
-            deleted = _archive_group(
-                b2, col, collection_name, folder, year, month, articles
-            )
-            total_archived += len(articles)
-            total_deleted  += deleted
+            try:
+                deleted = _archive_group(
+                    b2, col, collection_name, folder, year, month, articles
+                )
+                total_archived += len(articles)
+                total_deleted  += deleted
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"[archive] ERROR archiving {collection_name} {year}-{month:02d}: "
+                    f"{type(exc).__name__}: {exc} — skipping this month"
+                )
 
     print(
         f"[archive] done — {total_archived} articles archived, "
@@ -151,28 +153,27 @@ def run_archive() -> None:
 def check_and_archive_if_needed() -> None:
     """
     Check MongoDB data size. If >= 480 MB, archive oldest months (no 90-day
-    restriction) until 400 MB has been freed, keeping Atlas M0 safe.
-    Freed space is estimated from the raw JSON bytes of archived articles.
+    restriction) until FREE_TARGET_MB has been freed, keeping Atlas M0 safe.
+    Freed space is measured by re-querying dataSize after each deletion.
     """
-    current_mb = get_db_size_mb()
-    print(f"[size-check] MongoDB dataSize: {current_mb:.1f} MB")
+    start_mb = get_db_size_mb()
+    print(f"[size-check] MongoDB dataSize: {start_mb:.1f} MB")
 
-    if current_mb < SIZE_THRESHOLD_MB:
+    if start_mb < SIZE_THRESHOLD_MB:
         print(f"[size-check] Under {SIZE_THRESHOLD_MB} MB — no action needed")
         return
 
     print(
-        f"[size-check] {current_mb:.1f} MB >= {SIZE_THRESHOLD_MB} MB threshold — "
+        f"[size-check] {start_mb:.1f} MB >= {SIZE_THRESHOLD_MB} MB threshold — "
         f"archiving oldest articles until {FREE_TARGET_MB} MB freed"
     )
 
     b2 = B2Client()
-    freed_bytes   = 0
-    target_bytes  = FREE_TARGET_MB * 1024 * 1024
+    freed_mb      = 0.0
     total_deleted = 0
 
     for collection_name, folder in COLLECTIONS:
-        if freed_bytes >= target_bytes:
+        if freed_mb >= FREE_TARGET_MB:
             break
 
         col = get_collection(collection_name)
@@ -192,31 +193,33 @@ def check_and_archive_if_needed() -> None:
         groups = list(col.aggregate(pipeline, allowDiskUse=True))
 
         for group in groups:
-            if freed_bytes >= target_bytes:
+            if freed_mb >= FREE_TARGET_MB:
                 break
 
             year     = group["_id"]["year"]
             month    = group["_id"]["month"]
             articles = group["articles"]
 
-            # Estimate freed bytes from raw JSON size (close to BSON size).
-            raw_json = json.dumps(articles, default=str)
-            estimated_bytes = len(raw_json.encode("utf-8"))
+            try:
+                before_mb = get_db_size_mb()
+                deleted   = _archive_group(
+                    b2, col, collection_name, folder,
+                    year, month, articles,
+                    tag="[size-archive]",
+                )
+                if deleted:
+                    after_mb       = get_db_size_mb()
+                    freed_mb      += max(0.0, before_mb - after_mb)
+                    total_deleted += deleted
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"[size-archive] ERROR archiving {collection_name} {year}-{month:02d}: "
+                    f"{type(exc).__name__}: {exc} — skipping this month"
+                )
 
-            deleted = _archive_group(
-                b2, col, collection_name, folder,
-                year, month, articles,
-                tag="[size-archive]",
-            )
-
-            if deleted:
-                freed_bytes   += estimated_bytes
-                total_deleted += deleted
-
-    freed_mb   = freed_bytes / (1024 * 1024)
-    final_mb   = get_db_size_mb()
+    final_mb = get_db_size_mb()
     print(
-        f"[size-archive] done — ~{freed_mb:.0f} MB freed, "
+        f"[size-archive] done — {freed_mb:.1f} MB freed, "
         f"{total_deleted} docs deleted, "
         f"MongoDB now {final_mb:.1f} MB"
     )

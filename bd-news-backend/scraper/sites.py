@@ -13,9 +13,12 @@ Each site is collected by ONE of two methods:
     scrape_method == "rss"   →  scraper/rss_parser.py
     scrape_method == "html"  →  scraper/html_scrapers/<slug>.py
 
-Group split for GitHub Actions free tier (under 2,000 min/month):
-    Group A  → indexes 0–12  (13 Bangla sites)   cron '0 * * * *'  → :00
-    Group B  → indexes 13–15 (3 English sites)   cron '30 * * * *' → :30
+Group split — 5 Cloud Scheduler jobs, staggered 12 min apart:
+    Group A  → indexes  0–2   (3 Bangla sites)   cron '0 * * * *'  → :00
+    Group B  → indexes  3–5   (3 Bangla sites)   cron '12 * * * *' → :12
+    Group C  → indexes  6–8   (3 Bangla sites)   cron '24 * * * *' → :24
+    Group D  → indexes  9–10  (2 Bangla sites)   cron '36 * * * *' → :36
+    Group E  → indexes 11–13  (3 English sites)  cron '48 * * * *' → :48
 
 Each entry routes to a MongoDB collection by language:
     language == 'bn' → articles_bn
@@ -29,13 +32,14 @@ ScrapeMethod = Literal["rss", "html"]
 Site = Dict[str, Optional[str]]
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Master list — order matters: Group A = first 8, Group B = remaining 5.
-# Removed sites (robots.txt disallows all crawlers):
-#     amardesh   — www.amardeshonline.com   robots.txt: User-agent: *  Disallow: /
-#     newagebd   — www.newagebd.net          robots.txt: User-agent: *  Disallow: /
+# Master list — order determines group membership (see GROUP_*_RANGE below).
+# Removed sites:
+#     amardesh     — robots.txt: User-agent: *  Disallow: /
+#     newagebd     — robots.txt: User-agent: *  Disallow: /
+#     kalerkantho  — article pages return 403; content can never be fetched
 # ─────────────────────────────────────────────────────────────────────────────
 SITES: List[Site] = [
-    # ── Group A — Bangla (8 sites) ───────────────────────────────────────────
+    # ── Group A (indexes 0–2) ─────────────────────────────────────────────────
     {
         "slug": "prothomalo",
         "name": "Prothom Alo",
@@ -52,14 +56,6 @@ SITES: List[Site] = [
         "language": "bn",
     },
     {
-        "slug": "kalerkantho",
-        "name": "Kaler Kantho",
-        # No public RSS — Cloudflare 403s every probed path. HTML scraper required.
-        "scrape_method": "html",
-        "rss_url": None,
-        "language": "bn",
-    },
-    {
         "slug": "jugantor",
         "name": "Jugantor",
         # No working RSS path. /feed/* returns "Access denied" / 404.
@@ -67,6 +63,7 @@ SITES: List[Site] = [
         "rss_url": None,
         "language": "bn",
     },
+    # ── Group B (indexes 3–5) ─────────────────────────────────────────────────
     {
         "slug": "ittefaq",
         "name": "Ittefaq",
@@ -92,6 +89,7 @@ SITES: List[Site] = [
         "rss_url": None,
         "language": "bn",
     },
+    # ── Group C (indexes 6–8) ─────────────────────────────────────────────────
     {
         "slug": "bhorerkagoj",
         "name": "Bhorer Kagoj",
@@ -104,8 +102,6 @@ SITES: List[Site] = [
         "language": "bn",
     },
 
-    # ── Group A (continued) — 5 new Bangla sources added May 2026 ────────────
-    # Sourced from FeedSpot's top-25 Bangladesh news list and verified live.
     {
         "slug": "banglatribune",
         "name": "Bangla Tribune",
@@ -121,13 +117,7 @@ SITES: List[Site] = [
         "rss_url": "https://www.bd24live.com/bangla/feed/",
         "language": "bn",
     },
-    {
-        "slug": "risingbd",
-        "name": "Risingbd",
-        "scrape_method": "rss",
-        "rss_url": "https://www.risingbd.com/rss/rss.xml",
-        "language": "bn",
-    },
+    # ── Group D (indexes 9–10) ────────────────────────────────────────────────
     {
         "slug": "bd-journal",
         "name": "Bangladesh Journal",
@@ -146,7 +136,7 @@ SITES: List[Site] = [
         "language": "bn",
     },
 
-    # ── Group B — English (3 sites) ──────────────────────────────────────────
+    # ── Group E (indexes 12–14) ───────────────────────────────────────────────
     {
         "slug": "thedailystar",
         "name": "The Daily Star",
@@ -173,9 +163,9 @@ SITES: List[Site] = [
 ]
 
 # Sanity checks — fail fast on misconfiguration at import time.
-assert len(SITES) == 16, f"Expected 16 sites, got {len(SITES)}"
-assert len({s['slug'] for s in SITES}) == 16, "Duplicate slug detected in SITES"
-assert sum(1 for s in SITES if s['language'] == 'bn') == 13, "Expected 13 Bangla sites"
+assert len(SITES) == 14, f"Expected 14 sites, got {len(SITES)}"
+assert len({s['slug'] for s in SITES}) == 14, "Duplicate slug detected in SITES"
+assert sum(1 for s in SITES if s['language'] == 'bn') == 11, "Expected 11 Bangla sites"
 assert sum(1 for s in SITES if s['language'] == 'en') == 3, "Expected 3 English sites"
 assert all(s['scrape_method'] in ('rss', 'html') for s in SITES), \
     "Every site needs scrape_method in {'rss','html'}"
@@ -187,10 +177,21 @@ for _s in SITES:
         assert _s.get('rss_url') is None, f"{_s['slug']}: rss_url must be None when method='html'"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Group boundaries — referenced by GitHub Actions workflows.
+# Group boundaries — 5 groups staggered 12 min apart in Cloud Scheduler.
 # ─────────────────────────────────────────────────────────────────────────────
-GROUP_A_RANGE = (0, 13)   # indexes 0..12  → 13 sites (all Bangla)
-GROUP_B_RANGE = (13, 16)  # indexes 13..15 → 3 sites (all English)
+GROUP_A_RANGE = (0,  3)   # indexes  0–2  → 3 Bangla  (prothomalo, bd-pratidin, jugantor)
+GROUP_B_RANGE = (3,  6)   # indexes  3–5  → 3 Bangla  (ittefaq, samakal, mzamin)
+GROUP_C_RANGE = (6,  9)   # indexes  6–8  → 3 Bangla  (bhorerkagoj, banglatribune, bd24live)
+GROUP_D_RANGE = (9,  11)  # indexes  9–10 → 2 Bangla  (bd-journal, ajkerpatrika)
+GROUP_E_RANGE = (11, 14)  # indexes 11–13 → 3 English (thedailystar, dhakatribune, tbsnews)
+
+_GROUP_RANGES = {
+    "a": GROUP_A_RANGE,
+    "b": GROUP_B_RANGE,
+    "c": GROUP_C_RANGE,
+    "d": GROUP_D_RANGE,
+    "e": GROUP_E_RANGE,
+}
 
 
 def get_group(group: str) -> List[Site]:
@@ -198,22 +199,19 @@ def get_group(group: str) -> List[Site]:
     Return the subset of SITES belonging to the requested group.
 
     Args:
-        group: 'a' or 'b' (case-insensitive).
+        group: 'a', 'b', 'c', 'd', or 'e' (case-insensitive).
 
     Returns:
         List of site dicts for that group.
 
     Raises:
-        ValueError: if group is not 'a' or 'b'.
+        ValueError: if group is not one of the five letters.
     """
     g = group.strip().lower()
-    if g == "a":
-        start, end = GROUP_A_RANGE
-        return SITES[start:end]
-    if g == "b":
-        start, end = GROUP_B_RANGE
-        return SITES[start:end]
-    raise ValueError(f"Unknown group {group!r} — expected 'a' or 'b'")
+    if g not in _GROUP_RANGES:
+        raise ValueError(f"Unknown group {group!r} — expected one of {sorted(_GROUP_RANGES)}")
+    start, end = _GROUP_RANGES[g]
+    return SITES[start:end]
 
 
 def get_by_slug(slug: str) -> Site:
@@ -242,7 +240,7 @@ if __name__ == "__main__":
     print(f"  RSS    : {len(get_by_method('rss'))}")
     print(f"  HTML   : {len(get_by_method('html'))}")
     print()
-    for label in ("a", "b"):
+    for label in ("a", "b", "c", "d", "e"):
         group = get_group(label)
         print(f"Group {label.upper()} ({len(group)} sites):")
         for s in group:

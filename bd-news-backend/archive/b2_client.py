@@ -22,11 +22,22 @@ from botocore.exceptions import ClientError
 
 class B2Client:
     def __init__(self) -> None:
-        key_id   = os.environ["B2_KEY_ID"]
-        app_key  = os.environ["B2_APP_KEY"]
-        endpoint = os.environ["B2_ENDPOINT"]
-        self._bucket = os.environ["B2_BUCKET_NAME"]
+        key_id   = os.getenv("B2_KEY_ID")
+        app_key  = os.getenv("B2_APP_KEY")
+        endpoint = os.getenv("B2_ENDPOINT")
+        bucket   = os.getenv("B2_BUCKET_NAME")
 
+        missing = [k for k, v in {
+            "B2_KEY_ID": key_id, "B2_APP_KEY": app_key,
+            "B2_ENDPOINT": endpoint, "B2_BUCKET_NAME": bucket,
+        }.items() if not v]
+        if missing:
+            raise RuntimeError(
+                f"Missing B2 environment variables: {', '.join(missing)}. "
+                "Set them in .env or GitHub Secrets."
+            )
+
+        self._bucket = bucket
         self._s3 = boto3.client(
             "s3",
             endpoint_url=endpoint,

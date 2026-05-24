@@ -25,7 +25,6 @@ from scraper.html_scrapers import (
     ajkerpatrika,
     bhorerkagoj,
     jugantor,
-    kalerkantho,
     mzamin,
     samakal,
 )
@@ -37,7 +36,6 @@ from scraper.html_scrapers import (
 REGISTRY: Dict[str, ScraperFn] = {
     "samakal":      samakal.fetch,
     "bhorerkagoj":  bhorerkagoj.fetch,
-    "kalerkantho":  kalerkantho.fetch,
     "mzamin":       mzamin.fetch,
     "jugantor":     jugantor.fetch,
     "ajkerpatrika": ajkerpatrika.fetch,
