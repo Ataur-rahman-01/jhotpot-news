@@ -1,7 +1,11 @@
 # Secrets — never commit
 .env
 *.env
+**/.env.example
 cloud-setup.sh
+deploy-api.sh
+firebase-key.json
+**/firebase-key.json
 
 # Python
 __pycache__/
