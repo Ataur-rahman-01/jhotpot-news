@@ -23,12 +23,14 @@ except ImportError:  # pragma: no cover — curl_cffi is in requirements.txt
     AsyncSession = None  # type: ignore[assignment]
 
 
-# Slugs whose feeds / article pages are blocked by Cloudflare from Cloud Run.
-# Verified May 2026: identical fetches succeed from a residential IP via plain
-# httpx, but return a challenge page from GCP egress. curl_cffi's Chrome TLS
-# fingerprint slips past for RSS endpoints; article pages additionally require
-# a warm session (cookies from the homepage) + a Referer header.
-CF_BYPASS_SOURCES: Set[str] = {"ittefaq", "samakal", "banglatribune"}
+# Slugs whose feeds / article pages need curl_cffi instead of plain httpx.
+#
+# Currently empty: ittefaq, samakal, and banglatribune were the original
+# candidates but their Cloudflare WAF blocks Cloud Run egress on article
+# pages even with TLS impersonation + warm sessions. They are removed from
+# sites.py entirely; re-add them here (and to sites.py) if you ever run the
+# scraper behind a residential proxy or off-GCP.
+CF_BYPASS_SOURCES: Set[str] = set()
 
 # curl_cffi's TLS handshake is a touch slower than httpx; give it margin.
 CF_TIMEOUT_SECONDS = 25.0

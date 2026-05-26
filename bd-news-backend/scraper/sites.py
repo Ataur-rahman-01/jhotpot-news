@@ -34,9 +34,14 @@ Site = Dict[str, Optional[str]]
 # ─────────────────────────────────────────────────────────────────────────────
 # Master list — order determines group membership (see GROUP_*_RANGE below).
 # Removed sites:
-#     amardesh     — robots.txt: User-agent: *  Disallow: /
-#     newagebd     — robots.txt: User-agent: *  Disallow: /
-#     kalerkantho  — article pages return 403; content can never be fetched
+#     amardesh       — robots.txt: User-agent: *  Disallow: /
+#     newagebd       — robots.txt: User-agent: *  Disallow: /
+#     kalerkantho    — article pages return 403; content can never be fetched
+#     ittefaq        — Cloudflare WAF blocks GCP egress on article pages even
+#                      with curl_cffi+warm-session; RSS gets through but every
+#                      article body 403s. Re-enable behind a residential proxy.
+#     samakal        — same as ittefaq; sitemap fetch itself 403s from GCP.
+#     banglatribune  — same as ittefaq; article pages 403.
 # ─────────────────────────────────────────────────────────────────────────────
 SITES: List[Site] = [
     # ── Group A (indexes 0–2) ─────────────────────────────────────────────────
@@ -63,24 +68,7 @@ SITES: List[Site] = [
         "rss_url": None,
         "language": "bn",
     },
-    # ── Group B (indexes 3–5) ─────────────────────────────────────────────────
-    {
-        "slug": "ittefaq",
-        "name": "Ittefaq",
-        # Trailing slash matters — /feed 404s, /feed/ returns RSS.
-        "scrape_method": "rss",
-        "rss_url": "https://www.ittefaq.com.bd/feed/",
-        "language": "bn",
-    },
-    {
-        "slug": "samakal",
-        "name": "Samakal",
-        # No RSS — /feed returns homepage HTML. Sitemap-based scraper instead.
-        # news_sitemap.xml gives ~260 fresh entries in Google News format.
-        "scrape_method": "html",
-        "rss_url": None,
-        "language": "bn",
-    },
+    # ── Group B (indexes 3–4) ─────────────────────────────────────────────────
     {
         "slug": "mzamin",
         "name": "Manab Zamin",
@@ -89,26 +77,16 @@ SITES: List[Site] = [
         "rss_url": None,
         "language": "bn",
     },
-    # ── Group C (indexes 6–8) ─────────────────────────────────────────────────
     {
         "slug": "bhorerkagoj",
         "name": "Bhorer Kagoj",
-        # Originally listed under English in SKILL.md, but the site publishes
-        # Bangla content (sitemap declares <news:language>bn</news:language>
-        # and all observed titles are in Bangla). Moved to Group A.
+        # Site publishes Bangla content (sitemap declares <news:language>bn</news:language>).
         # No RSS — /feed 404s; uses Google News sitemap at /news_sitemap.xml.
         "scrape_method": "html",
         "rss_url": None,
         "language": "bn",
     },
-
-    {
-        "slug": "banglatribune",
-        "name": "Bangla Tribune",
-        "scrape_method": "rss",
-        "rss_url": "https://www.banglatribune.com/feed/",
-        "language": "bn",
-    },
+    # ── Group C (indexes 5–6) ─────────────────────────────────────────────────
     {
         "slug": "bd24live",
         "name": "BD24Live",
@@ -117,7 +95,6 @@ SITES: List[Site] = [
         "rss_url": "https://www.bd24live.com/bangla/feed/",
         "language": "bn",
     },
-    # ── Group D (indexes 9–10) ────────────────────────────────────────────────
     {
         "slug": "bd-journal",
         "name": "Bangladesh Journal",
@@ -125,6 +102,7 @@ SITES: List[Site] = [
         "rss_url": "https://www.bd-journal.com/feed/latest-rss.xml",
         "language": "bn",
     },
+    # ── Group D (index 7) ─────────────────────────────────────────────────────
     {
         "slug": "ajkerpatrika",
         "name": "Ajker Patrika",
@@ -136,7 +114,7 @@ SITES: List[Site] = [
         "language": "bn",
     },
 
-    # ── Group E (indexes 12–14) ───────────────────────────────────────────────
+    # ── Group E (indexes 8–10) ────────────────────────────────────────────────
     {
         "slug": "thedailystar",
         "name": "The Daily Star",
@@ -163,9 +141,9 @@ SITES: List[Site] = [
 ]
 
 # Sanity checks — fail fast on misconfiguration at import time.
-assert len(SITES) == 14, f"Expected 14 sites, got {len(SITES)}"
-assert len({s['slug'] for s in SITES}) == 14, "Duplicate slug detected in SITES"
-assert sum(1 for s in SITES if s['language'] == 'bn') == 11, "Expected 11 Bangla sites"
+assert len(SITES) == 11, f"Expected 11 sites, got {len(SITES)}"
+assert len({s['slug'] for s in SITES}) == 11, "Duplicate slug detected in SITES"
+assert sum(1 for s in SITES if s['language'] == 'bn') == 8, "Expected 8 Bangla sites"
 assert sum(1 for s in SITES if s['language'] == 'en') == 3, "Expected 3 English sites"
 assert all(s['scrape_method'] in ('rss', 'html') for s in SITES), \
     "Every site needs scrape_method in {'rss','html'}"
@@ -179,11 +157,11 @@ for _s in SITES:
 # ─────────────────────────────────────────────────────────────────────────────
 # Group boundaries — 5 groups staggered 12 min apart in Cloud Scheduler.
 # ─────────────────────────────────────────────────────────────────────────────
-GROUP_A_RANGE = (0,  3)   # indexes  0–2  → 3 Bangla  (prothomalo, bd-pratidin, jugantor)
-GROUP_B_RANGE = (3,  6)   # indexes  3–5  → 3 Bangla  (ittefaq, samakal, mzamin)
-GROUP_C_RANGE = (6,  9)   # indexes  6–8  → 3 Bangla  (bhorerkagoj, banglatribune, bd24live)
-GROUP_D_RANGE = (9,  11)  # indexes  9–10 → 2 Bangla  (bd-journal, ajkerpatrika)
-GROUP_E_RANGE = (11, 14)  # indexes 11–13 → 3 English (thedailystar, dhakatribune, tbsnews)
+GROUP_A_RANGE = (0,  3)   # indexes 0–2  → 3 Bangla  (prothomalo, bd-pratidin, jugantor)
+GROUP_B_RANGE = (3,  5)   # indexes 3–4  → 2 Bangla  (mzamin, bhorerkagoj)
+GROUP_C_RANGE = (5,  7)   # indexes 5–6  → 2 Bangla  (bd24live, bd-journal)
+GROUP_D_RANGE = (7,  8)   # index  7     → 1 Bangla  (ajkerpatrika)
+GROUP_E_RANGE = (8, 11)   # indexes 8–10 → 3 English (thedailystar, dhakatribune, tbsnews)
 
 _GROUP_RANGES = {
     "a": GROUP_A_RANGE,
