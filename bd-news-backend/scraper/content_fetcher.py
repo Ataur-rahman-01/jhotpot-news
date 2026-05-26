@@ -31,7 +31,7 @@ from urllib.parse import urljoin
 import httpx
 from bs4 import BeautifulSoup
 
-from scraper.cf_fetch import fetch_text as cf_fetch_text, needs_bypass
+from scraper.cf_fetch import CFSessionPool, needs_bypass
 from scraper.html_scrapers.base import DEFAULT_HEADERS, DEFAULT_TIMEOUT_SECONDS
 
 try:
@@ -201,6 +201,7 @@ def _extract_text(page_html: str, source: str = "") -> str:
 
 async def _fetch_one(
     client: httpx.AsyncClient,
+    cf_pool: Optional[CFSessionPool],
     url: str,
     source: str,
     semaphore: asyncio.Semaphore,
@@ -210,14 +211,14 @@ async def _fetch_one(
     Both fields are returned together because we only want to make ONE HTTP
     request per article. Returns ("", None) on any error.
 
-    Sources listed in cf_fetch.CF_BYPASS_SOURCES go through curl_cffi (Chrome
-    TLS impersonation) instead of the shared httpx client; everything else
-    keeps using the pooled client for performance.
+    Sources listed in cf_fetch.CF_BYPASS_SOURCES go through the curl_cffi
+    warm-session pool (Chrome TLS impersonation + homepage cookies + Referer);
+    everything else uses the shared httpx client.
     """
     async with semaphore:
         try:
-            if needs_bypass(source):
-                html = await cf_fetch_text(url)
+            if needs_bypass(source) and cf_pool is not None:
+                html = await cf_pool.get_text(url)
             else:
                 resp = await client.get(url)
                 resp.raise_for_status()
@@ -250,6 +251,10 @@ async def fetch_contents(
         for a in articles if a.get("url")
     ]
 
+    # Spin up the CF warm-session pool only if any article in this batch needs
+    # bypass — keeps non-CF runs zero-cost.
+    needs_cf_pool = any(needs_bypass(s) for _, s in url_source_pairs)
+
     # One shared client = one connection pool across all fetches. Avoids
     # 100 TCP+TLS handshakes when fetching 100 articles in a single run.
     async with httpx.AsyncClient(
@@ -257,11 +262,18 @@ async def fetch_contents(
         timeout=DEFAULT_TIMEOUT_SECONDS,
         follow_redirects=True,
     ) as client:
-        raw_results = await asyncio.gather(
-            *(_fetch_one(client, url, source, semaphore)
-              for url, source in url_source_pairs),
-            return_exceptions=True,
-        )
+        cf_pool_ctx = CFSessionPool() if needs_cf_pool else None
+        if cf_pool_ctx is not None:
+            await cf_pool_ctx.__aenter__()
+        try:
+            raw_results = await asyncio.gather(
+                *(_fetch_one(client, cf_pool_ctx, url, source, semaphore)
+                  for url, source in url_source_pairs),
+                return_exceptions=True,
+            )
+        finally:
+            if cf_pool_ctx is not None:
+                await cf_pool_ctx.__aexit__(None, None, None)
 
     output: Dict[str, Dict[str, Optional[str]]] = {}
     for (url, _), result in zip(url_source_pairs, raw_results):
