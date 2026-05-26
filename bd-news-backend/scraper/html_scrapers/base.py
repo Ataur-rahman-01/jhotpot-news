@@ -22,6 +22,8 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 import httpx
 from lxml import etree
 
+from scraper.cf_fetch import fetch_bytes as cf_fetch_bytes, needs_bypass
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HTTP defaults
@@ -230,9 +232,14 @@ async def parse_google_news_sitemap(
     """
     slug = site.get("slug", "?")
 
-    # Stage 1 — fetch raw XML bytes.
+    # Stage 1 — fetch raw XML bytes. CF-bypassed sources use curl_cffi (Chrome
+    # TLS impersonation) so Cloudflare returns the real sitemap instead of a
+    # challenge page; everything else uses the lighter httpx path.
     try:
-        raw = await fetch_bytes(sitemap_url)
+        if needs_bypass(slug):
+            raw = await cf_fetch_bytes(sitemap_url)
+        else:
+            raw = await fetch_bytes(sitemap_url)
     except Exception as exc:  # noqa: BLE001
         print(f"[{slug}] sitemap fetch failed: {type(exc).__name__}: {exc}")
         return []

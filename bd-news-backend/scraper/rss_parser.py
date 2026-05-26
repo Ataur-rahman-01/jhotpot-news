@@ -24,6 +24,8 @@ from typing import Any, Dict, List, Optional
 
 import feedparser
 
+from scraper.cf_fetch import fetch_bytes as cf_fetch_bytes, needs_bypass
+
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 
 
@@ -128,9 +130,17 @@ async def fetch_site(site: Dict[str, str]) -> List[Dict[str, Any]]:
     language = site.get("language", "")
 
     try:
-        # feedparser.parse is blocking — push it off the event loop so the
-        # 15-site fan-out in scraper/main.py can run concurrently.
-        feed = await asyncio.to_thread(feedparser.parse, rss_url)
+        # CF-bypassed sources: fetch RSS bytes via curl_cffi (Chrome TLS
+        # impersonation) and hand them to feedparser. Plain httpx / urllib —
+        # which feedparser uses internally — get a Cloudflare challenge page
+        # from Cloud Run egress and end up parsing zero entries.
+        if needs_bypass(slug):
+            raw = await cf_fetch_bytes(rss_url)
+            feed = await asyncio.to_thread(feedparser.parse, raw)
+        else:
+            # feedparser.parse is blocking — push it off the event loop so the
+            # 15-site fan-out in scraper/main.py can run concurrently.
+            feed = await asyncio.to_thread(feedparser.parse, rss_url)
 
         # feedparser sets `bozo` to 1 when XML is malformed but often still
         # returns usable entries — log it but keep going.

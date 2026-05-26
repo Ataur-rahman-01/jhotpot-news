@@ -25,11 +25,13 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urljoin
 
 import httpx
 from bs4 import BeautifulSoup
 
+from scraper.cf_fetch import fetch_text as cf_fetch_text, needs_bypass
 from scraper.html_scrapers.base import DEFAULT_HEADERS, DEFAULT_TIMEOUT_SECONDS
 
 try:
@@ -83,6 +85,62 @@ _SITE_SELECTORS: Dict[str, List[str]] = {
 }
 
 _WHITESPACE_RE = re.compile(r"\s+")
+
+# Meta tags that carry the article's hero image, tried in order.
+# og:image is the de-facto standard — every BD news site we scrape sets it.
+_IMAGE_META_PROPERTIES = [
+    ("meta", {"property": "og:image"}),
+    ("meta", {"property": "og:image:url"}),
+    ("meta", {"name": "twitter:image"}),
+    ("meta", {"name": "twitter:image:src"}),
+    ("link", {"rel": "image_src"}),
+]
+
+
+def extract_image_from_html(page_html: str, page_url: str = "") -> Optional[str]:
+    """Pull the article's hero image URL out of the page HTML.
+
+    Order of attempts:
+        1. <meta property="og:image">       (Open Graph — universal)
+        2. <meta property="og:image:url">
+        3. <meta name="twitter:image">      (Twitter Card)
+        4. <meta name="twitter:image:src">
+        5. <link rel="image_src">
+        6. First <img> inside <article> / .article-body that has a real src
+
+    Relative URLs are resolved against page_url. Data URIs and 1px tracking
+    pixels are skipped. Returns None when nothing usable is found.
+    """
+    try:
+        soup = BeautifulSoup(page_html, "lxml")
+    except Exception:
+        return None
+
+    for tag_name, attrs in _IMAGE_META_PROPERTIES:
+        tag = soup.find(tag_name, attrs=attrs)
+        if tag is None:
+            continue
+        url = (tag.get("content") or tag.get("href") or "").strip()
+        if url and not url.startswith("data:"):
+            return urljoin(page_url, url) if page_url else url
+
+    # Fallback — first <img> with a src/data-src inside the article body.
+    for container_selector in ("article", ".article-body", ".story-content",
+                               ".entry-content", ".post-content"):
+        container = soup.select_one(container_selector)
+        if container is None:
+            continue
+        for img in container.find_all("img"):
+            src = (img.get("src") or img.get("data-src")
+                   or img.get("data-lazy-src") or "").strip()
+            if not src or src.startswith("data:"):
+                continue
+            # Skip obvious 1px trackers / spacers.
+            if "1x1" in src or "pixel" in src.lower():
+                continue
+            return urljoin(page_url, src) if page_url else src
+
+    return None
 
 
 def _extract_text(page_html: str, source: str = "") -> str:
@@ -146,27 +204,42 @@ async def _fetch_one(
     url: str,
     source: str,
     semaphore: asyncio.Semaphore,
-) -> str:
-    """Fetch one article URL and return extracted text. Returns "" on any error."""
+) -> Tuple[str, Optional[str]]:
+    """Fetch one article URL and return (extracted text, image URL).
+
+    Both fields are returned together because we only want to make ONE HTTP
+    request per article. Returns ("", None) on any error.
+
+    Sources listed in cf_fetch.CF_BYPASS_SOURCES go through curl_cffi (Chrome
+    TLS impersonation) instead of the shared httpx client; everything else
+    keeps using the pooled client for performance.
+    """
     async with semaphore:
         try:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            return _extract_text(resp.text, source)
+            if needs_bypass(source):
+                html = await cf_fetch_text(url)
+            else:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                html = resp.text
+            return _extract_text(html, source), extract_image_from_html(html, url)
         except Exception as exc:  # noqa: BLE001
             print(f"[content] {url[:80]}: {type(exc).__name__}: {exc}")
-            return ""
+            return "", None
 
 
-async def fetch_contents(articles: List[Dict[str, Any]]) -> Dict[str, str]:
+async def fetch_contents(
+    articles: List[Dict[str, Any]],
+) -> Dict[str, Dict[str, Optional[str]]]:
     """
-    Fetch full article body text for a list of article stubs concurrently.
+    Fetch full article body text + hero image for a list of article stubs.
 
     Args:
         articles: list of dicts that each have at least a 'url' key.
 
     Returns:
-        Dict mapping url → extracted body text (may be "" when extraction failed).
+        Dict mapping url → {"content": str, "image_url": Optional[str]}.
+        content is "" when extraction failed; image_url is None when missing.
     """
     if not articles:
         return {}
@@ -190,10 +263,18 @@ async def fetch_contents(articles: List[Dict[str, Any]]) -> Dict[str, str]:
             return_exceptions=True,
         )
 
-    output: Dict[str, str] = {}
+    output: Dict[str, Dict[str, Optional[str]]] = {}
     for (url, _), result in zip(url_source_pairs, raw_results):
-        output[url] = "" if isinstance(result, Exception) else (result or "")
+        if isinstance(result, Exception) or result is None:
+            output[url] = {"content": "", "image_url": None}
+        else:
+            text, img = result
+            output[url] = {"content": text or "", "image_url": img}
 
-    success = sum(1 for v in output.values() if v)
-    print(f"[content] fetched text for {success}/{len(url_source_pairs)} articles")
+    text_ok = sum(1 for v in output.values() if v["content"])
+    img_ok = sum(1 for v in output.values() if v["image_url"])
+    print(
+        f"[content] fetched text for {text_ok}/{len(url_source_pairs)} articles, "
+        f"image for {img_ok}/{len(url_source_pairs)}"
+    )
     return output
