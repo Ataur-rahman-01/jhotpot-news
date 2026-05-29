@@ -1,0 +1,46 @@
+name: Test bd-pratidin from GitHub runner IP
+
+# Purpose: find out whether GitHub Actions' Azure egress IP can reach
+# bd-pratidin (which 403s from Google Cloud Run's GCP IPs).
+# Auto-runs when pushed to the throwaway probe branch; also manually runnable.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - test/bdpratidin-ip-probe
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Show this runner's egress IP
+        run: |
+          echo "=== Runner egress IP / ASN ==="
+          curl -s --max-time 10 https://ipinfo.io/json || true
+
+      - name: Probe bd-pratidin RSS feed
+        run: |
+          echo "=== RSS feed (/rss.xml) ==="
+          UA="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+          curl -sSL -A "$UA" -o /tmp/f.xml \
+            -w "HTTP %{http_code} | %{size_download}B | %{time_total}s\n" \
+            --max-time 15 "https://www.bd-pratidin.com/rss.xml" || true
+          echo "items in feed: $(grep -c '<item>' /tmp/f.xml 2>/dev/null || echo 0)"
+
+      - name: Probe one bd-pratidin article body
+        run: |
+          echo "=== Article body ==="
+          UA="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+          # Pull the first article link out of the feed; fall back to a known URL.
+          ART=$(grep -oE 'https://www\.bd-pratidin\.com/[a-z0-9/-]+/[0-9]+' /tmp/f.xml 2>/dev/null | head -1)
+          ART="${ART:-https://www.bd-pratidin.com/sports/2026/05/29/1256339}"
+          echo "URL: $ART"
+          curl -sSL -A "$UA" -o /dev/null \
+            -w "HTTP %{http_code} | %{size_download}B | %{time_total}s\n" \
+            --max-time 15 "$ART" || true
+
+      - name: Verdict
+        run: |
+          echo "If both probes show HTTP 200 → GitHub's Azure IP works; we can"
+          echo "run bd-pratidin (and the other CF-blocked sites) from GitHub Actions."
+          echo "If 403 → Azure IP is blocked too; need a Bangladesh residential IP."
